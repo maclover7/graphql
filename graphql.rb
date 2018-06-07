@@ -6,18 +6,113 @@ class GraphQL
     end
 
     def execute
+      # test_basic_query
+      # test_context_received
+      [
+        QueryField.new('hello')
+      ]
+
+      # test_type_not_in_schema_query
+      #[
+        #QueryField.new('goodbye')
+      #]
+
+      # test_two_root_types_query
+      #[
+        #QueryField.new('hello'),
+        #QueryField.new('hello')
+      #]
+
+      # test_args_received
+      #[
+        #QueryField.new('hello', { "id" => "1" })
+      #]
+
+      # test_nested_fields_query
+      #[
+        #QueryField.new('user', {}, [QueryField.new('name')])
+      #]
+
+      ###
+
       program = []
 
       while(@current < @tokens.length) do
-        program.push(parse())
+        program.push(new_parse())
       end
 
-      require 'pry'; binding.pry
-
-      program.flatten
+      program
     end
 
     private
+
+    def new_parse
+      token = @tokens[@current]
+
+      if token[:type] == 'str'
+        # We are defining a field!
+        name = token[:value]
+
+        token = @tokens[@current += 1]
+
+        # We are defining the field's arguments!
+        if token[:type] == 'paren'
+          arg_tokens = []
+
+          token = @tokens[@current += 1]
+
+          while(token[:type] != 'paren' && token[:value] != ')')
+            arg_tokens << token
+            token = @tokens[@current += 1]
+          end
+
+          arg_tokens << { type: 'arg_sep', value: ',' }
+
+          require 'pry'; binding.pry
+
+          #
+
+          if arg_tokens.length % 3 != 0
+            raise ArgumentError, "Improper formatting of arguments for '#{name}' field"
+          end
+
+          args = {}
+
+          arg_tokens.each_slice(3) do |arg_tokens_groups|
+            arg_tokens_groups.each do |arg_tokens_group|
+              require 'pry'; binding.pry
+              if arg_tokens_group[1][:type] == 'equalTo'
+                args[arg_tokens_group[0]] = arg_tokens_group[2]
+              else
+                raise ArgumentError, "Improper formatting of argument '#{arg_tokens_group[0]}' for '#{name}' field"
+              end
+            end
+          end
+
+          args
+
+          require 'pry'; binding.pry
+        end
+
+        # We are defining the field's fields!
+        if token[:type] == 'b'
+          token = @tokens[@current += 1]
+
+          while(token[:type] != 'b' && token[:value] != '}')
+            ret = new_parse()
+            token = @tokens[@current += 1]
+          end
+
+          require 'pry'; binding.pry
+        end
+
+        QueryField.new(name)
+      end
+
+      #@current = @tokens.length
+
+      #QueryField.new('hello')
+    end
 
     def parse
       token = @tokens[@current]
@@ -54,6 +149,8 @@ class GraphQL
 
         while(token[:type] != 'b' || (token[:type] == 'b' && token[:value] != '}'))
           newVal = parse()
+
+          require 'pry'; binding.pry
 
           if newVal.is_a?(Hash) && newVal.key?('_@params')
             prog.last[prog.last.keys.last].merge! newVal
@@ -132,33 +229,58 @@ class GraphQL
           current += 1
         end
 
-        if char =~ /[a-z]/i
+        if char == ','
+          tokens.push({
+            type: 'arg_sep',
+            value: char
+          })
+
+          current += 1
+        end
+
+        if char =~ /[a-z0-9]/i
           value = ''
 
-          while(char =~ /[a-z]/i) do
+          while(char =~ /[a-z0-9]/i) do
             value += char
             char = @query[current += 1]
           end
 
           tokens.push({
-            type: 'str',
+            type: 'alphanum',
             value: value
           })
         end
 
-        if char =~ /[0-9]/
-          value = ''
+        #if char =~ /[0-9]/
+          #value = ''
 
-          while(char =~ /[0-9]/) do
-            value += char
-            char = @query[current += 1]
-          end
+          #while(char =~ /[0-9]/) do
+            #value += char
+            #char = @query[current += 1]
+          #end
 
-          tokens.push({
-            type: 'num',
-            value: value
-          })
-        end
+          #tokens.push({
+            #type: 'num',
+            #value: value
+          #})
+        #end
+      end
+
+      add_query_if_necessary(tokens)
+      tokens
+    end
+
+    private
+
+    def add_query_if_necessary(tokens)
+      token = tokens.first
+
+      if token[:type] == 'b'
+        tokens.unshift({
+          type: 'str',
+          value: 'query'
+        })
       end
 
       tokens
@@ -189,6 +311,26 @@ class GraphQL
     end
   end
 
+  class QueryField
+    def initialize(name, args = {}, fields = [])
+      @name = name
+      @args = args
+      @fields = fields
+    end
+
+    def args
+      @args
+    end
+
+    def fields
+      @fields
+    end
+
+    def name
+      @name
+    end
+  end
+
   class Schema
     def initialize(data)
       @data = data
@@ -208,18 +350,45 @@ class GraphQL
   end
 
   def execute(query, context: {})
+    query = transform(query)
     result = {}
 
-    transform(query).each do |subqueries|
-      subqueries.each do |attr, nested_attrs|
-        result[attr] = @schema[attr]['resolve'].call(nested_attrs["_@params"], context)
-      end
+    require 'pry'; binding.pry
+    query.each do |attribute|
+      result[attribute.name] = resolve(attribute, @schema, nil, context)
+      #@schema[attr]['resolve'].call(nested_attrs["_@params"], context)
     end
 
     { data: result }
   end
 
   private
+
+  def resolve(attribute, schema, previous_object, context)
+    resolved_parent =
+      begin
+        if (resolveFunc = schema[attribute.name]['resolve'])
+          resolveFunc.call(attribute.args, context)
+        else
+          previous_object.public_send(attribute.name)
+        end
+      rescue => e
+        raise ArgumentError, "Unable to resolve attribute '#{attribute.name}', got #{e.class}: #{e.message}"
+      end
+
+    if attribute.fields.length > 0
+      resolved_fields = {}
+
+      attribute.fields.each do |field|
+        resolved_fields[field.name] =
+          resolve(field, schema[attribute.name]['fields'], resolved_parent, context)
+      end
+
+      resolved_fields
+    else
+      resolved_parent
+    end
+  end
 
   def transform(query)
     QueryTransformer.new(query).execute

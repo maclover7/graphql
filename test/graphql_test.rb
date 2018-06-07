@@ -48,7 +48,7 @@ class SingleLevelQueryTest < Minitest::Test
     assert_equal(context, @context)
   end
 
-  def test_args_received
+  def test_one_arg_received
     @args = nil
 
     schema = {
@@ -68,11 +68,31 @@ class SingleLevelQueryTest < Minitest::Test
     assert_equal({ "id" => '1' }, @args)
   end
 
-  def test_args_query
-    #assert_equal(
-      #{ :data => { "user" => { 'name' => "MyUser" } } },
-      #graphql_with(user_schema).execute('{ user { name } }')
-    #)
+  def test_multiple_args_received
+    @args = nil
+
+    schema = {
+      'hello' => {
+        'resolve' => ->(args, context) do
+          @args = args
+          'world'
+        end
+      }
+    }
+
+    assert_equal(
+      { :data => { "hello" => "world" } },
+      graphql_with(schema).execute('{ hello(id1: 1, id2: 2) }')
+    )
+
+    assert_equal({ "id1" => "1", "id2" => "2" }, @args)
+  end
+
+  def test_nested_fields_query
+    assert_equal(
+      { :data => { "user" => { 'name' => "MyUser" } } },
+      graphql_with(user_schema).execute('{ user { name } }')
+    )
   end
 
   private
